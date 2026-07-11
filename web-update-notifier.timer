@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Web Update Notifier daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
