@@ -1,0 +1,27 @@
+name,command,bookmarks
+Mozilla Firefox,firefox,~/.mozilla/firefox/*/places.sqlite
+Google Chrome,google-chrome,~/.config/google-chrome/*/Bookmarks
+Chromium,chromium,~/.config/chromium/*/Bookmarks
+Brave,brave-browser,~/.config/BraveSoftware/Brave-Browser/*/Bookmarks
+Microsoft Edge,microsoft-edge,~/.config/microsoft-edge/*/Bookmarks
+Vivaldi,vivaldi,~/.config/vivaldi/*/Bookmarks
+Opera,opera,~/.config/opera/*/Bookmarks
+LibreWolf,librewolf,~/.librewolf/*/places.sqlite
+Waterfox,waterfox,~/.waterfox/*/places.sqlite
+Pale Moon,palemoon,~/.palemoon/*/places.sqlite
+Floorp,floorp,~/.floorp/*/places.sqlite
+Firefox Developer Edition,firefox-developer-edition,~/.mozilla/firefox/*/places.sqlite
+Chrome Beta,google-chrome-beta,~/.config/google-chrome-beta/*/Bookmarks
+Brave Nightly,brave-browser-nightly,~/.config/BraveSoftware/Brave-Browser-Nightly/*/Bookmarks
+Firefox Flatpak,flatpak run org.mozilla.firefox,~/.var/app/org.mozilla.firefox/.mozilla/firefox/*/places.sqlite
+Chrome Flatpak,flatpak run com.google.Chrome,~/.var/app/com.google.Chrome/config/google-chrome/*/Bookmarks
+Brave Flatpak,flatpak run com.brave.Browser,~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser/*/Bookmarks
+Chromium Flatpak,flatpak run org.chromium.Chromium,~/.var/app/org.chromium.Chromium/config/chromium/*/Bookmarks
+Vivaldi Flatpak,flatpak run com.vivaldi.Vivaldi,~/.var/app/com.vivaldi.Vivaldi/config/vivaldi/*/Bookmarks
+Opera Flatpak,flatpak run com.opera.Opera,~/.var/app/com.opera.Opera/config/opera/*/Bookmarks
+Firefox Snap,snap run firefox,~/snap/firefox/common/.mozilla/firefox/*/places.sqlite
+Chrome Snap,snap run google-chrome,~/snap/google-chrome/current/.config/google-chrome/*/Bookmarks
+Brave Snap,snap run brave,~/snap/brave/common/.config/BraveSoftware/Brave-Browser/*/Bookmarks
+Edge Snap,snap run microsoft-edge,~/snap/microsoft-edge/current/.config/microsoft-edge/*/Bookmarks
+Vivaldi Snap,snap run vivaldi,~/snap/vivaldi/current/.config/vivaldi/*/Bookmarks
+LibreWolf Flatpak,flatpak run io.gitlab.librewolf-community,~/.var/app/io.gitlab.librewolf-community/.librewolf/*/places.sqlite

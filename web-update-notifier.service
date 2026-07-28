@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/repos/web-update-notifier/notifier.py check
+ExecStart=%h/repos/web-update-notifier/notifier.py daemon
+Restart=on-failure
 StandardOutput=journal
 StandardError=journal
 

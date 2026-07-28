@@ -4,21 +4,21 @@ A lightweight, local utility to monitor a list of web URLs for modifications. Wh
 
 ## Features
 
-- **Change Detection**: Leverages conditional HTTP GET request headers (`If-None-Match`, `If-Modified-Since`) and fall back to SHA-256 checks on stripped HTML body text.
-- **Native Notifications**: Connects to the desktop notification daemon via GObject Introspection. Clickable action "Abrir página" launches the default web browser and marks the URL as viewed.
-- **Timeout Management**: Integrates a 60-second GMainLoop timeout to prevent lingering background processes.
-- **Systemd Integration**: Comes with pre-configured timer and service files for automatic daily checks.
+- **Change Detection**: Leverages conditional HTTP GET request headers (`If-None-Match`, `If-Modified-Since`) and falls back to SHA-256 checks on stripped HTML body text.
+- **Rich Desktop Notifications**: Connects to GNOME notification daemon via GObject Introspection. Displays actual page title and cached favicon icon with persistent notification actions ("Abrir página", "Marcar como leída").
+- **Persistent Lifecycle & Daemon**: Runs as a lightweight systemd user service (`notifier.py daemon`) to maintain active notifications across reboots, avoid duplicate notifications, and allow users to read or dismiss updates at any time.
+- **Systemd Integration**: Pre-configured systemd user service (`web-update-notifier.service`) to run daemon mode seamlessly in the background.
 
 ## Prerequisites
 
-The notifier depends on Python 3 and its standard libraries. Native desktop notifications utilize the Python GObject Introspection bindings:
+The notifier depends on Python 3 and its standard libraries. Native desktop notifications utilize Python GObject Introspection bindings:
 
 ```bash
 # On Fedora/RHEL/CentOS:
 sudo dnf install python3-gobject
 ```
 
-If GObject Introspection is not available, the notifier automatically falls back to firing fire-and-forget notifications via the command-line utility `notify-send`.
+If GObject Introspection is not available, the notifier automatically falls back to firing notifications via `notify-send`.
 
 ## Installation
 
@@ -32,50 +32,67 @@ If GObject Introspection is not available, the notifier automatically falls back
    ln -s "$(pwd)/notifier.py" ~/.local/bin/web-notifier
    ```
 
-3. Setup the daily check scheduler by copying the systemd unit files:
+3. Setup the background service daemon by copying the systemd unit file:
    ```bash
    mkdir -p ~/.config/systemd/user
    cp web-update-notifier.service ~/.config/systemd/user/
-   cp web-update-notifier.timer ~/.config/systemd/user/
    ```
 
-4. Reload systemd user daemon, enable, and start the timer:
+4. Reload systemd user daemon, enable, and start the service:
    ```bash
    systemctl --user daemon-reload
-   systemctl --user enable --now web-update-notifier.timer
+   systemctl --user enable --now web-update-notifier.service
    ```
 
 ## CLI Usage
 
 ### Add a URL to Track
-Registers a URL and saves its initial signature (headers and content hash) as the baseline.
+Registers a URL, extracts its page title, downloads its favicon, and saves baseline signatures.
 ```bash
 ./notifier.py add https://example.com
 ```
 
-### List Tracked URLs
-Displays the registered URLs, their last checked time, and whether they have unread modifications.
+### List Tracked URLs or Summary Statistics
+Displays registered URLs, page titles, last check timestamps, and pending change status.
 ```bash
 ./notifier.py list
 ```
+You can also view summary statistics per browser and overall counts:
+```bash
+./notifier.py stats
+# or
+./notifier.py list --stats
+```
+
+### Mark a URL as Read Manually
+Marks an updated URL as read and clears any active notification.
+```bash
+./notifier.py mark-read https://example.com
+```
 
 ### Remove a URL
-Removes the URL from database tracking.
+Removes the URL from database tracking and deletes cached favicon files.
 ```bash
 ./notifier.py remove https://example.com
 ```
 
 ### Check for Updates Manually
-Executes the HTTP check immediately, displays Gnome notifications for any updated pages, and waits for user interaction (timeout of 60 seconds).
+Executes HTTP checks immediately and issues notifications for pending updates.
 ```bash
 ./notifier.py check
 ```
 
+### Run Daemon Mode
+Runs the persistent background daemon process with periodic check schedules.
+```bash
+./notifier.py daemon
+```
+
 ## How It Works
 
-- **Persistence**: URLs are saved inside a SQLite database at `~/.config/web-update-notifier/notifier.db`.
+- **Persistence**: Tracking database is stored at `~/.config/web-update-notifier/notifier.db`. Favicons are cached at `~/.cache/web-update-notifier/favicons/`.
 - **Change Detection States**:
-  - `last_checked`: Refers to the URL status retrieved on the most recent check command.
-  - `last_viewed`: Refers to the URL status when the user last clicked "Abrir página" (or when first added).
-- **Anti-Spam logic**: A notification is only triggered if the remote content differs from the `last_viewed` state AND the `last_checked` state has transitioned. Daily checks that find the same updated state will not trigger repeated notifications.
-- **HTML Sanitization**: To avoid false positives on dynamic pages (like pages containing varying timestamps, trackers, or dynamic script comments), the notifier extracts only readable text content for hash comparison.
+  - `last_checked`: Status retrieved during the most recent check.
+  - `last_viewed`: Status when user opened or marked the update as read.
+- **Anti-Spam & Duplicate Prevention**: Active notifications are tracked per URL (`notification_active`). Duplicate notifications are prevented, and pending notifications are restored across system reboots.
+- **HTML Sanitization**: Extracts page titles and readable body text, stripping dynamic script and style blocks to avoid false positives.

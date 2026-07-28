@@ -10,3 +10,4 @@ env/
 htmlcov/
 .mypy_cache/
 .DS_Store
+*.kk
