@@ -489,10 +489,37 @@ def load_browser_definitions():
     return definitions
 
 
+def format_firefox_date(val):
+    """Format Firefox SQLite dateAdded (microseconds Unix epoch) to formatted date string."""
+    if not val:
+        return None
+    try:
+        ts = int(val) / 1000000.0
+        if ts > 0:
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    return None
+
+
+def format_chromium_date(val):
+    """Format Chromium JSON date_added (microseconds Windows 1601 epoch) to formatted date string."""
+    if not val:
+        return None
+    try:
+        val_int = int(val)
+        ts = (val_int / 1000000.0) - 11644473600
+        if ts > 0:
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    return None
+
+
 def scan_all_browser_bookmarks():
     """
     Scan bookmarks from browsers configured in browsers.csv.
-    Returns dict: { browser_name: { 'command': command, 'items': [ (url, title, folder_path), ... ] } }
+    Returns dict: { browser_name: { 'command': command, 'items': [ (url, title, folder_path, date_added), ... ] } }
     """
     browser_defs = load_browser_definitions()
     browser_data = {}
@@ -521,7 +548,7 @@ def scan_all_browser_bookmarks():
                     conn = sqlite3.connect(tmp_db)
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT b.id, b.parent, b.title, b.type, b.fk, p.url
+                        SELECT b.id, b.parent, b.title, b.type, b.fk, p.url, b.dateAdded
                         FROM moz_bookmarks b
                         LEFT JOIN moz_places p ON b.fk = p.id
                     """)
@@ -533,7 +560,7 @@ def scan_all_browser_bookmarks():
                     except Exception:
                         pass
 
-                    nodes = {r[0]: {'parent': r[1], 'title': r[2], 'type': r[3], 'fk': r[4], 'url': r[5]} for r in rows}
+                    nodes = {r[0]: {'parent': r[1], 'title': r[2], 'type': r[3], 'fk': r[4], 'url': r[5], 'date_added': format_firefox_date(r[6])} for r in rows}
 
                     def get_ff_path(node_id):
                         path_parts = []
@@ -542,7 +569,7 @@ def scan_all_browser_bookmarks():
                             parent_id = nodes[curr]['parent']
                             if parent_id in nodes:
                                 t = nodes[parent_id]['title']
-                                if t and t not in ('root________', 'mobile______'):
+                                if t and t not in ('root________',):
                                     path_parts.insert(0, t)
                             curr = parent_id
                         return ' > '.join(path_parts) if path_parts else 'Bookmarks'
@@ -553,7 +580,8 @@ def scan_all_browser_bookmarks():
                             if not is_excluded(url, browser_name=b_name):
                                 fpath = get_ff_path(nid)
                                 b_title = n['title'] or url
-                                b_items.append((url, b_title, fpath))
+                                b_date = n['date_added']
+                                b_items.append((url, b_title, fpath, b_date))
                 except Exception:
                     continue
 
@@ -566,9 +594,9 @@ def scan_all_browser_bookmarks():
                     for root_val in roots.values():
                         if isinstance(root_val, dict):
                             for b_item in parse_chromium_node(root_val):
-                                url, title, fpath = b_item
+                                url = b_item[0]
                                 if not is_excluded(url, browser_name=b_name):
-                                    b_items.append((url, title, fpath))
+                                    b_items.append(b_item)
                 except Exception:
                     continue
 
@@ -585,9 +613,10 @@ def parse_chromium_node(node, current_path=None):
 
     if node_type == "url":
         url = node.get("url", "")
+        date_added = format_chromium_date(node.get("date_added"))
         if url.startswith("http://") or url.startswith("https://"):
             folder_str = " > ".join(current_path) if current_path else "Bookmarks"
-            yield (url, name, folder_str)
+            yield (url, name, folder_str, date_added)
     elif node_type == "folder" or "children" in node:
         new_path = current_path + [name] if name else current_path
         for child in node.get("children", []):
@@ -810,26 +839,117 @@ def check_url(url_row):
     return has_changed_since_view, url, new_title, new_favicon
 
 
+class BookmarkTreeNode:
+    def __init__(self, name, full_path=""):
+        self.name = name
+        self.full_path = full_path
+        self.subfolders = {}
+        self.items = []
+
+
+def render_folder_tree(node, browser_name, is_root=True):
+    html = ""
+    # Render items at this node level
+    for item in node.items:
+        domain = item["domain"]
+        url_hash = hashlib.md5(item['url'].encode()).hexdigest()
+        date_added_html = ""
+        if item.get("date_added"):
+            date_added_html = f'<span class="badge badge-date">📅 Added: {item["date_added"]}</span>'
+
+        html += f"""
+        <div class="card" id="card-{url_hash}" data-url="{item['url']}">
+            <div class="card-header">
+                <div class="card-title-group">
+                    <span class="favicon-icon">🌐</span>
+                    <div>
+                        <a href="{item['url']}" target="_blank" rel="noopener noreferrer" class="card-title" onclick="openAndMarkRead('{item['url']}', this)" onauxclick="openAndMarkRead('{item['url']}', this)">{item['title']}</a>
+                        <a href="{item['url']}" target="_blank" rel="noopener noreferrer" class="card-url" onclick="openAndMarkRead('{item['url']}', this)" onauxclick="openAndMarkRead('{item['url']}', this)">{item['url']}</a>
+                    </div>
+                </div>
+                <div class="badge-group">
+                    {date_added_html}
+                    <span class="badge badge-time">{item['rel_time']}</span>
+                </div>
+            </div>
+            <div class="card-actions">
+                <button class="btn btn-primary" onclick="markReadItem('{item['url']}', this)">
+                    Mark as Read
+                </button>
+                <button class="btn btn-danger" onclick="excludeItem('url', '{browser_name}', '{item['url']}', this)">
+                    Exclude URL
+                </button>
+                <button class="btn btn-danger" onclick="excludeItem('domain', '{browser_name}', '{domain}', this)">
+                    Exclude Domain ({domain})
+                </button>
+            </div>
+        </div>
+        """
+
+    # Render subfolders recursively
+    for sub_name, sub_node in sorted(node.subfolders.items()):
+        sub_html = render_folder_tree(sub_node, browser_name, is_root=False)
+        html += f"""
+        <div class="folder-node" data-folder="{sub_node.full_path}">
+            <div class="folder-header">
+                <div class="folder-title">
+                    <span class="folder-icon">📁</span>
+                    <h2>{sub_node.name}</h2>
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="markFolderRead(this)">
+                    Mark Folder as Read
+                </button>
+            </div>
+            <div class="folder-content">
+                {sub_html}
+            </div>
+        </div>
+        """
+
+    return html
+
+
 def generate_dashboard_html(browser_name):
-    """Generate HTML dashboard in English for updated browser bookmarks."""
+    """Generate HTML dashboard for updated browser bookmarks."""
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT url, title, favicon_path, last_checked_at, last_viewed_at
+        SELECT url, title, favicon_path, last_checked_at, last_viewed_at,
+               last_checked_hash, last_viewed_hash,
+               last_checked_etag, last_viewed_etag,
+               last_checked_modified, last_viewed_modified
         FROM urls
     """)
-    tracked_rows = {r[0]: r for r in cursor.fetchall()}
+    rows = cursor.fetchall()
     conn.close()
+
+    pending_urls_dict = {}
+    for r in rows:
+        url = r[0]
+        c_hash, v_hash = r[5], r[6]
+        c_etag, v_etag = r[7], r[8]
+        c_mod, v_mod = r[9], r[10]
+
+        has_pending = (c_hash != v_hash) or \
+                      (c_etag and c_etag != v_etag) or \
+                      (c_mod and c_mod != v_mod)
+        if has_pending:
+            pending_urls_dict[url] = r
 
     browser_data = scan_all_browser_bookmarks()
     b_info = browser_data.get(browser_name, {"command": "xdg-open", "items": []})
     bookmarks = b_info["items"]
 
     updated_items = []
-    for b_url, b_title, b_path in bookmarks:
-        if b_url in tracked_rows:
-            row = tracked_rows[b_url]
+    for bm_entry in bookmarks:
+        b_url = bm_entry[0]
+        b_title = bm_entry[1]
+        b_path = bm_entry[2]
+        b_date_added = bm_entry[3] if len(bm_entry) > 3 else None
+
+        if b_url in pending_urls_dict:
+            row = pending_urls_dict[b_url]
             u_title = row[1] or b_title
             u_fav = row[2]
             u_checked = row[3]
@@ -840,40 +960,28 @@ def generate_dashboard_html(browser_name):
                 "title": u_title,
                 "favicon_path": u_fav,
                 "bookmark_path": b_path,
+                "date_added": b_date_added,
                 "rel_time": rel_time,
                 "domain": domain
             })
 
-    cards_html = ""
+    root_node = BookmarkTreeNode("Root")
     for item in updated_items:
-        domain = item["domain"]
-        cards_html += f"""
-        <div class="card" id="card-{hashlib.md5(item['url'].encode()).hexdigest()}">
-            <div class="card-header">
-                <div class="card-title-group">
-                    <span class="favicon-icon">🌐</span>
-                    <div>
-                        <a href="{item['url']}" target="_blank" class="card-title">{item['title']}</a>
-                        <div class="card-path">{item['bookmark_path']}</div>
-                    </div>
-                </div>
-                <span class="badge">{item['rel_time']}</span>
-            </div>
-            <div class="card-actions">
-                <button class="btn btn-outline" onclick="excludeItem('url', '{browser_name}', '{item['url']}', this)">
-                    Exclude URL
-                </button>
-                <button class="btn btn-outline" onclick="excludeItem('domain', '{browser_name}', '{domain}', this)">
-                    Exclude Domain ({domain})
-                </button>
-                <button class="btn btn-danger" onclick="markReadItem('{item['url']}', this)">
-                    Remove from List
-                </button>
-            </div>
-        </div>
-        """
+        path_str = item["bookmark_path"] or "Bookmarks"
+        parts = [p.strip() for p in path_str.split(" > ") if p.strip()]
+        curr = root_node
+        curr_path_parts = []
+        for part in parts:
+            curr_path_parts.append(part)
+            full_path = " > ".join(curr_path_parts)
+            if part not in curr.subfolders:
+                curr.subfolders[part] = BookmarkTreeNode(part, full_path)
+            curr = curr.subfolders[part]
+        curr.items.append(item)
 
-    if not cards_html:
+    cards_html = render_folder_tree(root_node, browser_name)
+
+    if not cards_html.strip():
         cards_html = """
         <div class="empty-state">
             <h3>All up to date!</h3>
@@ -894,11 +1002,18 @@ def generate_dashboard_html(browser_name):
         :root {{
             --bg-color: #0f172a;
             --card-bg: rgba(30, 41, 59, 0.7);
+            --folder-bg: rgba(15, 23, 42, 0.5);
             --border-color: rgba(255, 255, 255, 0.1);
             --primary-accent: #38bdf8;
+            --primary-btn-bg: rgba(56, 189, 248, 0.15);
+            --primary-btn-border: rgba(56, 189, 248, 0.4);
+            --primary-btn-hover: #0284c7;
+            --danger-accent: #f87171;
+            --danger-btn-bg: rgba(239, 68, 68, 0.15);
+            --danger-btn-border: rgba(239, 68, 68, 0.4);
+            --danger-btn-hover: #ef4444;
             --text-main: #f8fafc;
             --text-sub: #94a3b8;
-            --danger-accent: #ef4444;
         }}
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
@@ -909,7 +1024,7 @@ def generate_dashboard_html(browser_name):
             padding: 2rem;
             background-image: radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 75%);
         }}
-        .container {{ max-width: 900px; margin: 0 auto; }}
+        .container {{ max-width: 960px; margin: 0 auto; }}
         header {{
             display: flex;
             align-items: center;
@@ -917,16 +1032,42 @@ def generate_dashboard_html(browser_name):
             margin-bottom: 2.5rem;
             padding-bottom: 1.5rem;
             border-bottom: 1px solid var(--border-color);
+            gap: 1rem;
+            flex-wrap: wrap;
         }}
         .header-title {{ display: flex; align-items: center; gap: 1rem; }}
         .header-title h1 {{ font-size: 1.75rem; font-weight: 700; }}
+        .header-actions {{ display: flex; align-items: center; gap: 0.75rem; }}
+        .folder-node {{
+            background: var(--folder-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
+            margin-bottom: 1.25rem;
+        }}
+        .folder-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            gap: 1rem;
+        }}
+        .folder-title {{ display: flex; align-items: center; gap: 0.75rem; }}
+        .folder-title h2 {{ font-size: 1.15rem; font-weight: 600; color: var(--text-main); }}
+        .folder-content {{
+            margin-left: 0.5rem;
+            padding-left: 0.75rem;
+            border-left: 2px solid rgba(56, 189, 248, 0.2);
+        }}
         .card {{
             background: var(--card-bg);
             backdrop-filter: blur(12px);
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 1.5rem;
-            margin-bottom: 1.25rem;
+            padding: 1.25rem;
+            margin-bottom: 1rem;
             transition: transform 0.2s ease, border-color 0.2s ease;
         }}
         .card:hover {{
@@ -937,34 +1078,45 @@ def generate_dashboard_html(browser_name):
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            margin-bottom: 1rem;
+            margin-bottom: 0.75rem;
+            gap: 1rem;
         }}
-        .card-title-group {{ display: flex; align-items: flex-start; gap: 1rem; }}
+        .card-title-group {{ display: flex; align-items: flex-start; gap: 0.75rem; }}
         .card-title {{
-            font-size: 1.2rem;
+            font-size: 1.1rem;
             font-weight: 600;
             color: var(--primary-accent);
             text-decoration: none;
+            word-break: break-word;
         }}
         .card-title:hover {{ text-decoration: underline; }}
-        .card-path {{ font-size: 0.875rem; color: var(--text-sub); margin-top: 0.25rem; }}
+        .card-url {{ font-size: 0.85rem; color: var(--text-sub); margin-top: 0.25rem; word-break: break-all; }}
+        .badge-group {{ display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }}
         .badge {{
-            background: rgba(56, 189, 248, 0.15);
-            color: var(--primary-accent);
             padding: 0.25rem 0.75rem;
             border-radius: 9999px;
             font-size: 0.8rem;
             font-weight: 600;
         }}
+        .badge-time {{
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--primary-accent);
+        }}
+        .badge-date {{
+            background: rgba(148, 163, 184, 0.15);
+            color: var(--text-sub);
+            font-weight: 500;
+        }}
         .card-actions {{
             display: flex;
             gap: 0.75rem;
-            margin-top: 1rem;
-            padding-top: 1rem;
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
             border-top: 1px solid rgba(255, 255, 255, 0.05);
+            flex-wrap: wrap;
         }}
         .btn {{
-            padding: 0.5rem 1rem;
+            padding: 0.45rem 0.9rem;
             border-radius: 8px;
             font-size: 0.85rem;
             font-weight: 600;
@@ -972,23 +1124,27 @@ def generate_dashboard_html(browser_name):
             border: 1px solid transparent;
             transition: all 0.2s ease;
         }}
-        .btn-outline {{
-            background: transparent;
-            color: var(--text-sub);
-            border-color: var(--border-color);
+        .btn-sm {{
+            padding: 0.3rem 0.7rem;
+            font-size: 0.8rem;
         }}
-        .btn-outline:hover {{
-            background: rgba(255, 255, 255, 0.08);
-            color: var(--text-main);
+        .btn-primary {{
+            background: var(--primary-btn-bg);
+            color: var(--primary-accent);
+            border-color: var(--primary-btn-border);
+        }}
+        .btn-primary:hover {{
+            background: var(--primary-btn-hover);
+            color: #ffffff;
         }}
         .btn-danger {{
-            background: rgba(239, 68, 68, 0.15);
+            background: var(--danger-btn-bg);
             color: var(--danger-accent);
-            border-color: rgba(239, 68, 68, 0.3);
+            border-color: var(--danger-btn-border);
         }}
         .btn-danger:hover {{
-            background: var(--danger-accent);
-            color: white;
+            background: var(--danger-btn-hover);
+            color: #ffffff;
         }}
         .empty-state {{
             text-align: center;
@@ -1005,9 +1161,14 @@ def generate_dashboard_html(browser_name):
             <div class="header-title">
                 <h1>Updated Bookmarks: {browser_name}</h1>
             </div>
-            <button class="btn btn-danger" onclick="excludeBrowser('{browser_name}')">
-                Exclude All {browser_name}
-            </button>
+            <div class="header-actions">
+                <button class="btn btn-primary" onclick="markAllRead('{browser_name}', this)">
+                    Mark All as Read
+                </button>
+                <button class="btn btn-danger" onclick="excludeBrowser('{browser_name}')">
+                    Exclude All {browser_name}
+                </button>
+            </div>
         </header>
 
         <div id="cards-container">
@@ -1016,12 +1177,28 @@ def generate_dashboard_html(browser_name):
     </div>
 
     <script>
+        function openAndMarkRead(url, linkEl) {{
+            fetch(`/api/mark-read?url=${{encodeURIComponent(url)}}`);
+            const card = linkEl.closest('.card');
+            if (card) {{
+                const parentFolder = card.closest('.folder-node');
+                card.remove();
+                cleanEmptyFolders(parentFolder);
+            }}
+            checkEmptyState();
+        }}
+
         async function excludeItem(scope, browser, target, btn) {{
             if (!confirm('Are you sure you want to add this exclusion?')) return;
             const res = await fetch(`/api/exclude?scope=${{scope}}&browser=${{encodeURIComponent(browser)}}&url=${{encodeURIComponent(target)}}&domain=${{encodeURIComponent(target)}}`);
             if (res.ok) {{
                 const card = btn.closest('.card');
-                if (card) card.remove();
+                if (card) {{
+                    const parentFolder = card.closest('.folder-node');
+                    card.remove();
+                    cleanEmptyFolders(parentFolder);
+                }}
+                checkEmptyState();
             }}
         }}
 
@@ -1037,7 +1214,82 @@ def generate_dashboard_html(browser_name):
             const res = await fetch(`/api/mark-read?url=${{encodeURIComponent(url)}}`);
             if (res.ok) {{
                 const card = btn.closest('.card');
-                if (card) card.remove();
+                if (card) {{
+                    const parentFolder = card.closest('.folder-node');
+                    card.remove();
+                    cleanEmptyFolders(parentFolder);
+                }}
+                checkEmptyState();
+            }}
+        }}
+
+        async function markFolderRead(btn) {{
+            const folderNode = btn.closest('.folder-node');
+            if (!folderNode) return;
+            const cards = Array.from(folderNode.querySelectorAll('.card'));
+            const urls = cards.map(c => c.dataset.url).filter(Boolean);
+            if (urls.length === 0) return;
+
+            if (!confirm(`Mark ${{urls.length}} page(s) in this folder as read?`)) return;
+
+            const res = await fetch('/api/mark-read-batch', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ urls: urls }})
+            }});
+            if (res.ok) {{
+                const parentFolder = folderNode.parentElement ? folderNode.parentElement.closest('.folder-node') : null;
+                folderNode.remove();
+                cleanEmptyFolders(parentFolder);
+                checkEmptyState();
+            }}
+        }}
+
+        async function markAllRead(browser, btn) {{
+            const cards = Array.from(document.querySelectorAll('.card'));
+            const urls = cards.map(c => c.dataset.url).filter(Boolean);
+            if (urls.length === 0) return;
+
+            if (!confirm(`Mark all ${{urls.length}} pending page(s) as read?`)) return;
+
+            const res = await fetch('/api/mark-read-batch', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ urls: urls }})
+            }});
+            if (res.ok) {{
+                document.getElementById('cards-container').innerHTML = `
+                    <div class="empty-state">
+                        <h3>All up to date!</h3>
+                        <p>No pending updated bookmarks found for this browser.</p>
+                    </div>
+                `;
+            }}
+        }}
+
+        function cleanEmptyFolders(folderNode) {{
+            while (folderNode) {{
+                const remainingCards = folderNode.querySelectorAll('.card');
+                const remainingFolders = folderNode.querySelectorAll('.folder-node');
+                if (remainingCards.length === 0 && remainingFolders.length === 0) {{
+                    const parent = folderNode.parentElement ? folderNode.parentElement.closest('.folder-node') : null;
+                    folderNode.remove();
+                    folderNode = parent;
+                }} else {{
+                    break;
+                }}
+            }}
+        }}
+
+        function checkEmptyState() {{
+            const cards = document.querySelectorAll('.card');
+            if (cards.length === 0) {{
+                document.getElementById('cards-container').innerHTML = `
+                    <div class="empty-state">
+                        <h3>All up to date!</h3>
+                        <p>No pending updated bookmarks found for this browser.</p>
+                    </div>
+                `;
             }}
         }}
     </script>
@@ -1051,6 +1303,28 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
     """HTTP Request Handler for Local Dashboard & API."""
     def log_message(self, format, *args):
         pass
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if path == "/api/mark-read-batch":
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length > 0 else b'{}'
+            try:
+                data = json.loads(body.decode('utf-8'))
+                urls = data.get('urls', [])
+                for u in urls:
+                    update_last_viewed(u)
+            except Exception as e:
+                print(f"Error processing mark-read-batch: {e}", file=sys.stderr)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "ok"}).encode("utf-8"))
+            return
+
+        self.send_error(404, "Not Found")
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1199,10 +1473,22 @@ def show_browser_bookmark_notification(browser_name, updated_count, browser_comm
         n.set_urgency(Notify.Urgency.NORMAL)
 
         def on_open_dashboard(notification, action, target_url):
+            print(f"[TRACE] on_open_dashboard triggered: browser_name={browser_name!r}, action={action!r}, target_url={target_url!r}, browser_command={browser_command!r}", flush=True)
             launch_browser_command(browser_command, target_url)
+            browser_key = f"browser:{browser_name}"
+            if browser_key in active_notifications:
+                del active_notifications[browser_key]
+
+        def on_browser_notification_closed(notification, b_name):
+            browser_key = f"browser:{b_name}"
+            if browser_key in active_notifications:
+                del active_notifications[browser_key]
 
         n.add_action("open", "Open Bookmarks", on_open_dashboard, dashboard_url)
+        n.connect("closed", on_browser_notification_closed, browser_name)
         n.show()
+
+        active_notifications[f"browser:{browser_name}"] = n
     except Exception as e:
         print(f"Error showing bookmark notification ({browser_name}): {e}", file=sys.stderr)
 
@@ -1556,7 +1842,7 @@ def list_exclusions_cmd():
         print(f"{r[0]:<5} | {r[1]:<10} | {b_name:<15} | {r[3]:<45}")
 
 
-def check_urls_cmd():
+def check_urls_cmd(only_pending=False):
     """Command logic to run update verification across all URLs and browser bookmarks."""
     global loop
     start_dashboard_server()
@@ -1566,7 +1852,8 @@ def check_urls_cmd():
     all_bookmark_urls = set()
 
     for b_name, b_info in browser_data.items():
-        for b_url, b_title, b_path in b_info["items"]:
+        for bm_item in b_info["items"]:
+            b_url = bm_item[0]
             all_bookmark_urls.add(b_url)
             db_path = get_db_path()
             conn = sqlite3.connect(db_path)
@@ -1574,7 +1861,8 @@ def check_urls_cmd():
             cursor.execute("SELECT url FROM urls WHERE url = ?", (b_url,))
             if not cursor.fetchone():
                 conn.close()
-                add_url_cmd(b_url)
+                if not only_pending:
+                    add_url_cmd(b_url)
             else:
                 conn.close()
 
@@ -1597,15 +1885,32 @@ def check_urls_cmd():
         return
 
     pending_notifications = []
-    print("Checking web page updates...")
-    for row in rows:
-        url = row[0]
-        if is_excluded(url):
-            continue
+    if only_pending:
+        print("Filtering already pending web page updates...")
+        for row in rows:
+            url = row[0]
+            if is_excluded(url):
+                continue
 
-        has_unviewed_change, url, title, favicon_path = check_url(row)
-        if has_unviewed_change:
-            pending_notifications.append((url, title, favicon_path))
+            checked_etag, checked_mod, checked_hash = row[4], row[5], row[6]
+            viewed_etag, viewed_mod, viewed_hash = row[7], row[8], row[9]
+            title, favicon_path = row[10], row[11]
+
+            has_pending_view = (checked_hash != viewed_hash) or \
+                               (checked_etag and checked_etag != viewed_etag) or \
+                               (checked_mod and checked_mod != viewed_mod)
+            if has_pending_view:
+                pending_notifications.append((url, title, favicon_path))
+    else:
+        print("Checking web page updates...")
+        for row in rows:
+            url = row[0]
+            if is_excluded(url):
+                continue
+
+            has_unviewed_change, url, title, favicon_path = check_url(row)
+            if has_unviewed_change:
+                pending_notifications.append((url, title, favicon_path))
 
     # 3. Process notifications
     if pending_notifications:
@@ -1704,7 +2009,11 @@ def main():
     parser_list.add_argument("--stats", "--summary", action="store_true", help="Display summary statistics instead of full table")
 
     # Check URLs subcommand
-    subparsers.add_parser("check", help="Check if tracked URLs have changed")
+    parser_check = subparsers.add_parser("check", help="Check if tracked URLs have changed")
+    parser_check.add_argument("--pending", "--only-pending", "-p", action="store_true", help="Launch notifications only for currently pending URLs without re-checking")
+
+    # Notify subcommand
+    subparsers.add_parser("notify", help="Launch desktop notifications for currently pending URLs")
 
     # Daemon subcommand
     subparsers.add_parser("daemon", help="Run background service daemon")
@@ -1730,7 +2039,11 @@ def main():
     elif args.command == "check":
         setup_signal_handlers()
         kill_previous_instances()
-        check_urls_cmd()
+        check_urls_cmd(only_pending=args.pending)
+    elif args.command == "notify":
+        setup_signal_handlers()
+        kill_previous_instances()
+        check_urls_cmd(only_pending=True)
     elif args.command == "daemon":
         setup_signal_handlers()
         kill_previous_instances()
